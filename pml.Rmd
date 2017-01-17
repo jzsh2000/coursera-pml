@@ -1,0 +1,203 @@
+---
+title: 'Prediction Assignment'
+author: "Xiaoyang Jin"
+date: "`r Sys.Date()`"
+output:
+    html_document:
+        toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+Using devices such as _Jawbone Up_, _Nike FuelBand_, and _Fitbit_ it is now
+possible to collect a large amount of data about personal activity
+relatively inexpensively. These type of devices are part of the quantified
+self movement – a group of enthusiasts who take measurements about
+themselves regularly to improve their health, to find patterns in their
+behavior, or because they are tech geeks. One thing that people regularly do
+is quantify how _much_ of a particular activity they do, but they rarely
+quantify _how well they do it_. In this project, your goal will be to use
+data from accelerometers on the belt, forearm, arm, and dumbell of
+6 participants. They were asked to perform barbell lifts correctly and
+incorrectly in 5 different ways. More information is available from the
+website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on
+the Weight Lifting Exercise Dataset).
+
+The training data for this project are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here:
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+## Train and select models
+
+### preprocess
+
+First we will read in the data, the training and testing data are already downloaded into the 'data/' directory.
+```{r}
+training <- read.csv("data/pml-training.csv",
+                     na.strings = c("NA", ""),
+                     stringsAsFactors = FALSE)
+testing <- read.csv("data/pml-testing.csv",
+                     na.strings = c("NA", ""),
+                     stringsAsFactors = FALSE)
+```
+
+```{r}
+dim(training)
+table(training$classe)
+```
+
+As we see, the training dataset has a sample size of `r nrow(training)`,
+and there are `r ncol(training)-1` features in this dataset (that's somehow a
+huge number compared to the sample size). The **classe** variable is what we 
+would predict in the test set, and it seems balanced.
+
+The data type of each feature will be estimated, lest it's misjudged in
+`read.csv` function. (In fact, this step shows no effect when I inspect the
+change happened)
+```{r}
+for(i in seq(ncol(training)-1)) {
+    vector_valid = training[,i][!is.na(training[,i]) & training[,i] != ""]
+    if(length(vector_valid) == 0 ||
+       sum(is.na(suppressWarnings(as.numeric(vector_valid)))) > 0) {
+        training[,i] = as.character(training[,i])
+        testing[,i] = as.character(testing[,i])
+    } else {
+        training[,i] = as.numeric(training[,i])
+        testing[,i] = as.numeric(testing[,i])
+    }
+}
+```
+
+The first 7 columns will be removed because these variables shouldn't relate 
+to the result variable. Besides, as the number of features is large, we could safely remove all the features with missing values.
+```{r}
+training = training[,-c(1:7)]
+testing = testing[,-c(1:7)]
+
+column.complete = complete.cases(t(training))
+training = training[, column.complete]
+testing = testing[, column.complete]
+
+dim(training)
+```
+
+After this process, `r dim(training)[2]-1` features remain in our dataset
+(the `training` data frame has `r dim(training)[2]` columns because one of
+them is the result variable).
+
+Next the training set is cut apart into the de facto training part and the
+validation part. The validation part will be used to predict out of sample 
+error before we turn to the real test set.
+```{r}
+library(caret)
+set.seed(2017)
+
+train.idx = createDataPartition(training$classe, p = 3/4, list = FALSE)
+train_dat = training[train.idx,]
+validate_dat = training[-train.idx,]
+```
+
+### train model using rpart
+
+Now we will train a decision tree model using `rpart` mothod. 5-fold cross
+validation is used in `train` function.
+```{r}
+library(rpart)
+set.seed(2017)
+
+model1 <- train(classe ~ ., data = train_dat,
+                method = "rpart",
+                trControl = trainControl(method = "cv", number = 5))
+```
+
+The final tree model could be plotted using the `fancyRpartPlot` function in
+`rattle` package:
+
+```{r}
+library(rattle)
+fancyRpartPlot(model1$finalModel)
+```
+
+The out of sample error could be calculated on the validation set
+```{r}
+(model1_conf = 
+     confusionMatrix(predict(model1, newdata = validate_dat),
+                     validate_dat$classe))
+```
+
+The overall accuracy is `r model1_conf$overall[1]`
+
+### train model using random forest
+
+Alternatively, we could use the random forset model, which is the default
+method in the `train` function
+
+```{r}
+library(randomForest)
+
+set.seed(2017)
+model2 <- train(classe ~ ., data = train_dat,
+                trControl = trainControl(method = "cv", number = 5))
+```
+
+Again, we assess the model performance on the validation set
+```{r}
+(model2_conf =
+    confusionMatrix(predict(model2, validate_dat),
+                    validate_dat$classe))
+```
+
+The accuracy is `r model2_conf$overall[1]`, which is much higher than the
+`rpart` method, so we will use the random forest method on the test set.
+
+We could inspect the variable importance of model2 (only the 10 most 
+important variables are listed):
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+
+# Get importance
+importance    <- importance(model2$finalModel)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance =
+                                round(importance[,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+    top_n(10, Importance) %>%
+    mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_few()
+```
+
+The first two most important variables are `roll_belt` and `pitch_forearm`,
+it's in accordance with the previous tree model.
+
+## Predict on testing set
+Now we could apply the model on the testing set
+```{r}
+predict(model2, newdata = testing)
+```
+
+## Session information
+```{r}
+devtools::session_info()
+```
+
