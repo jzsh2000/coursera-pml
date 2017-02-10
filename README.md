@@ -3,6 +3,8 @@
 course project for practical machine learning (part of JHU data science
 specialization)
 
+The report is available at: https://jzsh2000.github.io/coursera-practical-machine-learning/pml.html
+
 ## Background
 
 Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible
